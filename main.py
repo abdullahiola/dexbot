@@ -441,6 +441,7 @@ class DexScreenerAutomation:
 
     async def launch_browser(self, p, user_id: int):
         """Launch persistent browser context with user-specific profile for concurrent support."""
+        import json
         user_profile_dir = await self.get_user_profile_dir(user_id)
         context = await p.chromium.launch_persistent_context(
             user_data_dir=user_profile_dir,
@@ -454,6 +455,19 @@ class DexScreenerAutomation:
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             ignore_default_args=["--enable-automation"],
         )
+
+        # Inject portable session cookies if available (cross-platform, from export_session.py)
+        session_file = "./session.json"
+        if os.path.exists(session_file):
+            try:
+                with open(session_file) as f:
+                    storage = json.load(f)
+                cookies = storage.get("cookies", [])
+                if cookies:
+                    await context.add_cookies(cookies)
+                    logger.info(f"Injected {len(cookies)} cookies from session.json")
+            except Exception as e:
+                logger.warning(f"Could not load session.json: {e}")
 
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto("https://marketplace.dexscreener.com/product/token-info/order")
@@ -2477,10 +2491,27 @@ class DexScreenerBot:
         return CHAIN
 
     async def login_setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Check if the saved browser_profile session is still valid."""
-        await update.message.reply_text(
-            "🔍 Checking saved DexScreener session...",
-        )
+        """Check session status OR import a session.json file sent as attachment."""
+        import json
+
+        # If user sent a document with /login, import it
+        if update.message.document:
+            await self.import_session_file(update, context)
+            return
+
+        # Otherwise, check current session status
+        await update.message.reply_text("🔍 Checking saved DexScreener session...")
+
+        session_file = "./session.json"
+        session_info = ""
+        if os.path.exists(session_file):
+            try:
+                with open(session_file) as f:
+                    data = json.load(f)
+                cookie_count = len(data.get("cookies", []))
+                session_info = f"\n📦 session.json found ({cookie_count} cookies)"
+            except Exception:
+                session_info = "\n⚠️ session.json found but unreadable"
 
         try:
             async with async_playwright() as p:
@@ -2495,35 +2526,73 @@ class DexScreenerBot:
                     viewport={"width": 1920, "height": 1080},
                 )
 
+                # Inject cookies from session.json if available
+                if os.path.exists(session_file):
+                    try:
+                        with open(session_file) as f:
+                            storage = json.load(f)
+                        cookies = storage.get("cookies", [])
+                        if cookies:
+                            await ctx.add_cookies(cookies)
+                    except Exception:
+                        pass
+
                 page = ctx.pages[0] if ctx.pages else await ctx.new_page()
                 await page.goto("https://marketplace.dexscreener.com/product/token-info/order")
                 await page.wait_for_timeout(4000)
 
-                # Check for Sign Out link — means we're logged in
                 try:
                     await page.wait_for_selector("text=Sign Out", timeout=5000)
                     await ctx.close()
                     await update.message.reply_text(
-                        "✅ *Session is valid!* DexScreener is logged in and ready.\n\n"
+                        f"✅ *Session is valid!* DexScreener is logged in and ready.{session_info}\n\n"
                         "All users can use the bot.",
                         parse_mode="Markdown"
                     )
                 except Exception:
                     await ctx.close()
                     await update.message.reply_text(
-                        "❌ *Session expired or not found.*\n\n"
-                        "The bot cannot log in interactively on a headless VPS.\n\n"
-                        "*To fix this:*\n"
-                        "1. Log in on your local machine first (run the bot locally, use /login there)\n"
-                        "2. Copy your `browser_profile/` folder to the VPS:\n"
-                        "   `scp -r ./browser_profile user@YOUR_VPS_IP:~/DexPay/deploy/`\n"
-                        "3. Restart the bot: `docker compose restart`\n"
-                        "4. Run /login again to verify.",
+                        f"❌ *Session not found.*{session_info}\n\n"
+                        "*How to fix — run this on your local Mac:*\n"
+                        "```\npython export_session.py\n```\n"
+                        "Then send the generated `session.json` file here as a reply to this message.",
                         parse_mode="Markdown"
                     )
 
         except Exception as e:
             await update.message.reply_text(f"❌ Error checking session: {e}")
+
+    async def import_session_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Import cookies from an uploaded session.json file sent via Telegram."""
+        import json
+
+        doc = update.message.document
+        if not doc.file_name.endswith(".json"):
+            await update.message.reply_text("❌ Please send a `.json` file exported by `export_session.py`.")
+            return
+
+        await update.message.reply_text("📥 Importing session...")
+
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            raw = await tg_file.download_as_bytearray()
+            storage = json.loads(raw.decode("utf-8"))
+
+            cookies = storage.get("cookies", [])
+            if not cookies:
+                await update.message.reply_text("❌ No cookies found in the file. Make sure you used `export_session.py`.")
+                return
+
+            with open("./session.json", "w") as f:
+                json.dump(storage, f)
+
+            await update.message.reply_text(
+                f"✅ Imported {len(cookies)} cookies!\n\n"
+                "Run /login to verify the session is active."
+            )
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Import failed: {e}")
 
     async def auto_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Auto-start the bot when user sends any message"""
@@ -2789,6 +2858,8 @@ class DexScreenerBot:
         app.add_handler(CommandHandler("help", self.help_command))
         app.add_handler(CommandHandler("stats", self.stats_command))
         app.add_handler(CommandHandler("login", self.login_setup))  # Hidden from users, only you know
+        # Accept session.json uploads (sent as document without a command)
+        app.add_handler(MessageHandler(filters.Document.FileExtension("json"), self.import_session_file))
 
         # Global fallback handlers - these work even when ConversationHandler state is lost
         # (e.g., after bot restart, disconnection, or timeout)
