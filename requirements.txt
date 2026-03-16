@@ -1,0 +1,4 @@
+python-telegram-bot
+playwright
+pillow
+zxing-cpp

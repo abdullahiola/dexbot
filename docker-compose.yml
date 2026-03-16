@@ -1,0 +1,20 @@
+services:
+  dexpay-bot:
+    build: .
+    container_name: dexpay_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persist browser session (DexScreener login state)
+      - ./browser_profile:/app/browser_profile
+      # Persist user upload files & screenshots between restarts
+      - ./user_uploads:/app/user_uploads
+      - ./screenshots:/app/screenshots
+      - ./temp_profiles:/app/temp_profiles
+      - ./assets:/app/assets
+    # Playwright / Chromium needs a larger shared-memory allocation
+    shm_size: "2gb"
+    # Required for Chromium to work in Docker
+    security_opt:
+      - seccomp=unconfined

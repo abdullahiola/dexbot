@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+*.egg-info/
+
+# Generated files (will be mounted as volumes)
+browser_profile/
+temp_profiles/
+screenshots/
+user_uploads/
+
+# Logs
+*.log
+
+# Dev/outdated files
+main(outdated).py
+accept_any_img.py
+latest.py
+logout.py
+run_bot.sh
+home.png
+qrcode.png
+
+# macOS
+.DS_Store
