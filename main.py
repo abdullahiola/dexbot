@@ -2477,42 +2477,53 @@ class DexScreenerBot:
         return CHAIN
 
     async def login_setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Setup login - saves to shared master profile that all users will use"""
+        """Check if the saved browser_profile session is still valid."""
         await update.message.reply_text(
-            "🔐 **Login Setup**\n\n"
-            "Opening browser for manual login...\n"
-            "This login will be shared with all bot users.\n"
-            "Complete the login in the browser window.",
-            parse_mode="Markdown"
+            "🔍 Checking saved DexScreener session...",
         )
 
         try:
             async with async_playwright() as p:
-                # Use the master profile directory (shared among all users)
                 ctx = await p.chromium.launch_persistent_context(
                     user_data_dir=self.automation.master_profile_dir,
                     headless=True,
-                    args=["--disable-blink-features=AutomationControlled"],
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                    ],
                     viewport={"width": 1920, "height": 1080},
                 )
 
                 page = ctx.pages[0] if ctx.pages else await ctx.new_page()
                 await page.goto("https://marketplace.dexscreener.com/product/token-info/order")
+                await page.wait_for_timeout(4000)
 
-                await update.message.reply_text(
-                    "🌐 Browser opened!\n\n"
-                    "Login to DexScreener, then the session will be saved.\n"
-                    "This login will work for ALL users of this bot.\n"
-                    "Browser will close in 2 minutes."
-                )
-
-                await asyncio.sleep(120)
-                await ctx.close()
-
-                await update.message.reply_text("✅ Login saved! All users can now use the bot.")
+                # Check for Sign Out link — means we're logged in
+                try:
+                    await page.wait_for_selector("text=Sign Out", timeout=5000)
+                    await ctx.close()
+                    await update.message.reply_text(
+                        "✅ *Session is valid!* DexScreener is logged in and ready.\n\n"
+                        "All users can use the bot.",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    await ctx.close()
+                    await update.message.reply_text(
+                        "❌ *Session expired or not found.*\n\n"
+                        "The bot cannot log in interactively on a headless VPS.\n\n"
+                        "*To fix this:*\n"
+                        "1. Log in on your local machine first (run the bot locally, use /login there)\n"
+                        "2. Copy your `browser_profile/` folder to the VPS:\n"
+                        "   `scp -r ./browser_profile user@YOUR_VPS_IP:~/DexPay/deploy/`\n"
+                        "3. Restart the bot: `docker compose restart`\n"
+                        "4. Run /login again to verify.",
+                        parse_mode="Markdown"
+                    )
 
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.message.reply_text(f"❌ Error checking session: {e}")
 
     async def auto_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Auto-start the bot when user sends any message"""
